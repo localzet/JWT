@@ -4,7 +4,7 @@ namespace localzet\JWT;
 
 class Install
 {
-    public const WEBMAN_PLUGIN = true;
+    public const FRAMEX_PLUGIN = true;
 
     /**
      * @var array
