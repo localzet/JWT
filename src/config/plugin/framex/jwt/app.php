@@ -17,13 +17,6 @@ return [
 
                 'leeway' => 60,
 
-                'cache_token_ttl' => 604800,
-                'cache_token_pre' => 'JWT:TOKEN:',
-
-                'user_model' => function ($uid) {
-                        return [];
-                },
-
                 /**
                  * Приватный ключ токена доступа
                  */
