@@ -51,9 +51,9 @@ class JwtToken
      * @return array|string[]
      * @throws JwtTokenException
      */
-    public static function refreshToken(): array
+    public static function refreshToken($token): array
     {
-        $token = self::getTokenFromHeaders();
+        $token = $token ?? self::getTokenFromHeaders();
         $config = self::_getConfig();
 
         // Декодируем токен refresh token
