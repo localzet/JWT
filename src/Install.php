@@ -10,7 +10,7 @@ class Install
      * @var array
      */
     protected static $pathRelation = array(
-        'config/plugin/localzet/jwt' => 'config/plugin/localzet/jwt',
+        'config/plugin/framex/jwt' => 'config/plugin/framex/jwt',
     );
 
     /**
