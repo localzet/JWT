@@ -295,7 +295,7 @@ class JwtToken
      */
     private static function _getConfig(): array
     {
-        $config = config('plugin.localzet.jwt.app.jwt');
+        $config = config('plugin.framex.jwt.app.jwt');
         if (empty($config)) {
             throw new JwtConfigException('Файл конфигурации JWT не существует');
         }
