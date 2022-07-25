@@ -1,5 +1,18 @@
 <?php
 
+/**
+ * @version     1.0.0-dev
+ * @package     FrameX (FX) JWT Plugin
+ * @link        https://localzet.gitbook.io
+ * 
+ * @author      localzet <creator@localzet.ru>
+ * 
+ * @copyright   Copyright (c) 2018-2020 Zorin Projects 
+ * @copyright   Copyright (c) 2020-2022 NONA Team
+ * 
+ * @license     https://www.localzet.ru/license GNU GPLv3 License
+ */
+
 declare(strict_types=1);
 
 namespace localzet\JWT;
@@ -22,16 +35,16 @@ class JwtToken
 
     private const REFRESH_TOKEN = 2;
 
-    /**
+    /** @@
      * Получить конкретное доп.поле
      * 
      * @param string $val
      * @return mixed|string
      * @throws JwtTokenException
      */
-    public static function getExtendVal(string $val)
+    public static function getExtendVal(string $val, int $tokenType = self::ACCESS_TOKEN, string $token = null)
     {
-        return self::getTokenExtend()[$val] ?? '';
+        return self::getTokenExtend($tokenType, $token)[$val] ?? '';
     }
 
     /**
@@ -40,12 +53,12 @@ class JwtToken
      * @return array
      * @throws JwtTokenException
      */
-    public static function getExtend(): array
+    public static function getExtend(int $tokenType = self::ACCESS_TOKEN, string $token = null): array
     {
-        return self::getTokenExtend();
+        return self::getTokenExtend($tokenType, $token);
     }
 
-    /**
+    /** @@
      * Обновить токен
      * 
      * @return array|string[]
@@ -58,7 +71,7 @@ class JwtToken
 
         // Декодируем токен refresh token
         try {
-            $extend = self::verifyToken($token, self::REFRESH_TOKEN);
+            $refresh = self::verifyToken($token, self::REFRESH_TOKEN);
         } catch (SignatureInvalidException $signatureInvalidException) {
             throw new JwtTokenException('Неверный токен обновления');
         } catch (BeforeValidException $beforeValidException) {
@@ -72,10 +85,10 @@ class JwtToken
         }
 
         // Строим из refresh token новую пару токенов
-        $extend['exp'] = time() + $config['access_exp'];
-        $payload = self::generatePayload($config, $extend);
+        $payload = self::generatePayload($config, $refresh['extend']);
         $secretKey = self::getPrivateKey($config, self::ACCESS_TOKEN);
-        $newToken['access_token'] = self::makeToken($extend, $secretKey, $config['algorithms']);
+        $newToken['access_token'] = self::makeToken($payload['accessPayload'], $secretKey, $config['algorithms']);
+
         if (!isset($config['refresh_disable']) || (isset($config['refresh_disable']) && $config['refresh_disable'] === false)) {
             $refreshSecretKey = self::getPrivateKey($config, self::REFRESH_TOKEN);
             $payload['exp'] = time() + $config['refresh_exp'];
@@ -84,19 +97,19 @@ class JwtToken
         return $newToken;
     }
 
-    /**
+    /** @@
      * Генерация токенов
      * 
      * @param array $extend
      * @return array
      * @throws JwtConfigException
      */
-    public static function generateToken(array $extend): array
+    public static function generateToken(array $extend, array $payload = []): array
     {
         $config = self::_getConfig();
         $config['access_exp'] = $extend['access_exp'] ?? $config['access_exp'];
         $config['refresh_exp'] = $extend['refresh_exp'] ?? $config['refresh_exp'];
-        $payload = self::generatePayload($config, $extend);
+        $payload = self::generatePayload($config + $payload, $extend);
         $secretKey = self::getPrivateKey($config, self::ACCESS_TOKEN);
         $token = [
             'token_type' => 'Bearer',
@@ -142,20 +155,25 @@ class JwtToken
      * @return array
      * @throws JwtTokenException
      */
-    private static function getTokenExtend(): array
+    private static function getTokenExtend(int $tokenType = self::ACCESS_TOKEN, string $token = null): array
     {
-        return (array) self::verify()['extend'];
+        return (array) self::verify($tokenType, $token)['extend'];
     }
 
-    /**
+    /** @@
      * Осталось до истечения срока
      * 
      * @param int $tokenType
      * @return int
      */
-    public static function getTokenExp(int $tokenType = self::ACCESS_TOKEN): int
+    public static function getTokenExp(int $tokenType = self::ACCESS_TOKEN, string $token = null): int
     {
-        return (int) self::verify($tokenType)['exp'] - time();
+        return (int) self::verify($tokenType, $token)['exp'] - time();
+    }
+
+    public static function getToken(): string
+    {
+        return self::getTokenFromHeaders();
     }
 
     /**
