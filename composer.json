@@ -28,7 +28,7 @@
     },
     "autoload": {
         "psr-4": {
-            "localzet\\JWT\\": "./src/"
+            "localzet\\JWT\\": "src/"
         }
     }
 }
