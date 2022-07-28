@@ -1,7 +1,6 @@
 <?php
 
 /**
- * @version     1.0.0-dev
  * @package     FrameX (FX) JWT Plugin
  * @link        https://localzet.gitbook.io
  * 
