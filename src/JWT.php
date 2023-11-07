@@ -122,7 +122,7 @@ final class JWT
     {
         $hashAlgorithm = match (self::getClaim('alg')) {
             'HS1', 'RS1' => 'SHA1',
-            'HS256', 'RS256', 'ES256', 
+            'HS256', 'RS256', 'ES256',
             'ES256K', 'HS256/64', 'EdDSA' => 'SHA256',
             'HS384', 'RS384', 'ES384' => 'SHA384',
             'HS512', 'RS512', 'ES512' => 'SHA512',
@@ -147,13 +147,13 @@ final class JWT
             'kid' => self::$CLAIM_KID,
             'enc' => self::$CLAIM_ENC,
 
-                // Утверждения полезной нагрузки
-                // 'iss' => 'Issuer',
-                // 'sub' => 'Subject',
-                // 'aud' => 'Audience',
-                // 'nbf' => 'Not Before',
-                // 'iat' => 'Issued At',
-                // 'jti' => 'JWT ID',
+            // Утверждения полезной нагрузки
+            // 'iss' => 'Issuer',
+            // 'sub' => 'Subject',
+            // 'aud' => 'Audience',
+            // 'nbf' => 'Not Before',
+            // 'iat' => 'Issued At',
+            // 'jti' => 'JWT ID',
 
             default => throw new UnexpectedValueException('Незарегистрированное утверждение JWT')
         };
@@ -177,7 +177,8 @@ final class JWT
         mixed  $lwtTokenData,
         string $ecdsaPrivateKey = null,
         string $tokenEncryption = null,
-    ): string {
+    ): string
+    {
         self::$ALGORITHM = $tokenEncryption;
         self::$PRIVATE_KEY = $ecdsaPrivateKey;
 
@@ -222,7 +223,8 @@ final class JWT
         string $encodedToken,
         string $ecdsaPublicKey = null,
         string $tokenEncryption = null,
-    ): mixed {
+    ): mixed
+    {
         self::$ALGORITHM = $tokenEncryption;
         self::$PUBLIC_KEY = $ecdsaPublicKey;
 
