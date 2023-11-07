@@ -28,7 +28,7 @@ final class JWT
      * @var string TYPE
      */
     private const TYPE = 'JWT';
-    
+
     /**
      * Допустимые алгоритмы шифрования для данных токена
      *
@@ -84,13 +84,15 @@ final class JWT
     private const STRINGS_MATCH = 0;
     private const MBSTRING_ENCODING = '8bit';
 
+    public static ?string $CLAIM_CTY = null;
     public static ?string $CLAIM_KID = null;
+    public static ?string $CLAIM_ENC = null;
 
     /**
      * Возвращает тип шифрования
      *
      * @return string Тип шифрования
-     * @throws UnexpectedValueException Если ENCRYPTION не соответствует ни одному из известных алгоритмов шифрования.
+     * @throws UnexpectedValueException Если алгоритм не соответствует ни одному из известных алгоритмов шифрования.
      */
     protected static function getEncryption(): string
     {
@@ -99,6 +101,7 @@ final class JWT
             'RS1', 'RS256', 'RS384', 'RS512' => 'RSA-PKCS#1',
             'ES256', 'ES256K', 'ES384', 'ES512' => 'ECDSA',
             'EdDSA' => 'EdDSA',
+
             default => throw new UnexpectedValueException('Недопустимый алгоритм шифрования'),
         };
 
@@ -113,14 +116,14 @@ final class JWT
      * Возвращает алгоритм хеширования
      *
      * @return string Алгоритм хеширования
-     * @throws UnexpectedValueException Если ENCRYPTION не соответствует ни одному из известных алгоритмов хеширования.
+     * @throws UnexpectedValueException Если алгоритм не соответствует ни одному из известных алгоритмов хеширования.
      */
     protected static function getHashAlgorithm(): string
     {
         $hashAlgorithm = match (self::getClaim('alg')) {
             'HS1', 'RS1' => 'SHA1',
-            'HS256', 'HS256/64', 'ES256',
-            'ES256K', 'RS256', 'EdDSA' => 'SHA256',
+            'HS256', 'RS256', 'ES256', 
+            'ES256K', 'HS256/64', 'EdDSA' => 'SHA256',
             'HS384', 'RS384', 'ES384' => 'SHA384',
             'HS512', 'RS512', 'ES512' => 'SHA512',
 
@@ -134,31 +137,30 @@ final class JWT
         return $hashAlgorithm;
     }
 
-    protected static function getClaim($claim): string
+    protected static function getClaim($claim): ?string
     {
         return match ($claim) {
             // Утверждения заголовка
             'typ' => self::TYPE,
+            'cty' => self::$CLAIM_CTY,
             'alg' => self::$ALGORITHM,
             'kid' => self::$CLAIM_KID,
+            'enc' => self::$CLAIM_ENC,
 
-            // 'cty' => 'Content Type',
-            // 'enc' => 'Encryption',
-
-            // Утверждения полезной нагрузки
-            // 'iss' => 'Issuer',
-            // 'sub' => 'Subject',
-            // 'aud' => 'Audience',
-            // 'nbf' => 'Not Before',
-            // 'iat' => 'Issued At',
-            // 'jti' => 'JWT ID',
+                // Утверждения полезной нагрузки
+                // 'iss' => 'Issuer',
+                // 'sub' => 'Subject',
+                // 'aud' => 'Audience',
+                // 'nbf' => 'Not Before',
+                // 'iat' => 'Issued At',
+                // 'jti' => 'JWT ID',
 
             default => throw new UnexpectedValueException('Незарегистрированное утверждение JWT')
         };
     }
 
     /**
-     * Кодирует данные в JWT-токен.
+     * Кодирует данные в токен.
      *
      * Эта функция кодирует данные в токен и возвращает полученную строку. Она принимает
      * данные, закрытый ключ, публичный ключ и алгоритм шифрования в качестве аргументов.
@@ -175,8 +177,7 @@ final class JWT
         mixed  $lwtTokenData,
         string $ecdsaPrivateKey = null,
         string $tokenEncryption = null,
-    ): string
-    {
+    ): string {
         self::$ALGORITHM = $tokenEncryption;
         self::$PRIVATE_KEY = $ecdsaPrivateKey;
 
@@ -200,7 +201,7 @@ final class JWT
     }
 
     /**
-     * Декодирует JWT-токен.
+     * Декодирует токен.
      *
      * Эта функция декодирует токен и возвращает расшифрованные данные. Она принимает
      * закодированный токен, публичный ключ, закрытый ключ и алгоритм шифрования в качестве аргументов.
@@ -221,8 +222,7 @@ final class JWT
         string $encodedToken,
         string $ecdsaPublicKey = null,
         string $tokenEncryption = null,
-    ): mixed
-    {
+    ): mixed {
         self::$ALGORITHM = $tokenEncryption;
         self::$PUBLIC_KEY = $ecdsaPublicKey;
 
@@ -269,8 +269,10 @@ final class JWT
         $header = array_filter(
             [
                 'typ' => self::getClaim('typ'),
+                'cty' => self::getClaim('cty'),
                 'alg' => self::getClaim('alg'),
                 'kid' => self::getClaim('kid'),
+                'enc' => self::getClaim('enc'),
             ],
             function ($value) {
                 return $value && $value != null;
