@@ -1,0 +1,813 @@
+<?php
+
+declare(strict_types=1);
+
+namespace localzet;
+
+use DomainException;
+use Exception;
+use RuntimeException;
+use SodiumException;
+use Throwable;
+use UnexpectedValueException;
+use function strlen;
+
+/**
+ * Класс JWT (JSON Web Token)
+ *
+ * Этот класс предназначен для работы с JWT-токенами. JWT-токены - это тип токенов,
+ * используемых для аутентификации и передачи информации между двумя сторонами.
+ *
+ * @link https://tools.ietf.org/html/rfc7519 Официальная документация по JWT-токенам
+ */
+final class JWT
+{
+    /**
+     * Тип токена
+     *
+     * @var string TYPE
+     */
+    private const TYPE = 'JWT';
+    
+    /**
+     * Допустимые алгоритмы шифрования для данных токена
+     *
+     * @var array ALLOWED_JWA
+     */
+    private const ALLOWED_JWA = [
+        'HS256', 'HS384', 'HS512',          // Симметричные алгоритмы
+        'RS256', 'RS384', 'RS512',          // Асимметричные алгоритмы (RSA-PKCS#1) 
+        'ES256', 'ES384', 'ES512',          // Асимметричные алгоритмы, основанные на эллиптической кривой
+        'EdDSA',                            // Асимметричный алгоритм, основанный на кривой Эдвардса (Ed25519 или Ed448)
+        'RS1', 'HS1', 'HS256/64', 'ES256K', // Экспериментальные алгоритмы
+        /*
+            RS1 и HS1 используют алгоритм хэширования SHA-1
+            HS256/64 после генерации сигнатуры оставляет только первые 8 символов
+            ES256K выделен для ECDSA на кривой secp256k1 
+        */
+    ];
+
+    /**
+     * Алгоритм шифрования для сигнатуры токена
+     *
+     * Определяет алгоритм шифрования, который будет использоваться для создания цифровой подписи токена.
+     *
+     * @var string $ALGORITHM
+     */
+    protected static string $ALGORITHM = 'ES512';
+
+    /**
+     * Закрытый ключ в формате PEM (ECDSA)
+     *
+     * Используется для создания цифровой подписи токена.
+     *
+     * @var string|null $PRIVATE_KEY
+     */
+    protected static ?string $PRIVATE_KEY = null;
+
+    /**
+     * Публичный ключ в формате PEM (ECDSA)
+     *
+     * Используется для проверки цифровой подписи токена.
+     *
+     * @var string|null $PUBLIC_KEY
+     */
+    protected static ?string $PUBLIC_KEY = null;
+
+    // Определение констант для работы с данными
+
+    private const TOKEN_SEGMENTS_COUNT = 3;
+    private const HASH_RAW_OUTPUT = true;
+    private const OPENSSL_VERIFY_SUCCESS = 1;
+    private const BASE64_GROUP_SIZE = 4;
+    private const JSON_MAX_DEPTH = 512;
+    private const STRINGS_MATCH = 0;
+    private const MBSTRING_ENCODING = '8bit';
+
+    public static ?string $CLAIM_KID = null;
+
+    /**
+     * Возвращает тип шифрования
+     *
+     * @return string Тип шифрования
+     * @throws UnexpectedValueException Если ENCRYPTION не соответствует ни одному из известных алгоритмов шифрования.
+     */
+    protected static function getEncryption(): string
+    {
+        $encryption = match (self::getClaim('alg')) {
+            'HS1', 'HS256', 'HS256/64', 'HS384', 'HS512' => 'HMAC',
+            'RS1', 'RS256', 'RS384', 'RS512' => 'RSA-PKCS#1',
+            'ES256', 'ES256K', 'ES384', 'ES512' => 'ECDSA',
+            'EdDSA' => 'EdDSA',
+            default => throw new UnexpectedValueException('Недопустимый алгоритм шифрования'),
+        };
+
+        if (!$encryption) {
+            throw new RuntimeException('Ошибка получения алгоритма шифрования');
+        }
+
+        return $encryption;
+    }
+
+    /**
+     * Возвращает алгоритм хеширования
+     *
+     * @return string Алгоритм хеширования
+     * @throws UnexpectedValueException Если ENCRYPTION не соответствует ни одному из известных алгоритмов хеширования.
+     */
+    protected static function getHashAlgorithm(): string
+    {
+        $hashAlgorithm = match (self::getClaim('alg')) {
+            'HS1', 'RS1' => 'SHA1',
+            'HS256', 'HS256/64', 'ES256',
+            'ES256K', 'RS256', 'EdDSA' => 'SHA256',
+            'HS384', 'RS384', 'ES384' => 'SHA384',
+            'HS512', 'RS512', 'ES512' => 'SHA512',
+
+            default => throw new UnexpectedValueException('Недопустимый алгоритм шифрования'),
+        };
+
+        if (!$hashAlgorithm) {
+            throw new RuntimeException('Ошибка получения алгоритма хеширования');
+        }
+
+        return $hashAlgorithm;
+    }
+
+    protected static function getClaim($claim): string
+    {
+        return match ($claim) {
+            // Утверждения заголовка
+            'typ' => self::TYPE,
+            'alg' => self::$ALGORITHM,
+            'kid' => self::$CLAIM_KID,
+
+            // 'cty' => 'Content Type',
+            // 'enc' => 'Encryption',
+
+            // Утверждения полезной нагрузки
+            // 'iss' => 'Issuer',
+            // 'sub' => 'Subject',
+            // 'aud' => 'Audience',
+            // 'nbf' => 'Not Before',
+            // 'iat' => 'Issued At',
+            // 'jti' => 'JWT ID',
+
+            default => throw new UnexpectedValueException('Незарегистрированное утверждение JWT')
+        };
+    }
+
+    /**
+     * Кодирует данные в JWT-токен.
+     *
+     * Эта функция кодирует данные в токен и возвращает полученную строку. Она принимает
+     * данные, закрытый ключ, публичный ключ и алгоритм шифрования в качестве аргументов.
+     * Если эти аргументы не указаны, используются значения по умолчанию, определенные в классе.
+     *
+     * @param mixed $lwtTokenData Данные для кодирования в токен.
+     * @param string|null $ecdsaPrivateKey Закрытый ключ в формате PEM (ECDSA).
+     * @param string|null $tokenEncryption Алгоритм шифрования (например, 'HS256', 'RS256').
+     *
+     * @return string Возвращает строку, представляющую закодированный токен.
+     * @throws Exception
+     */
+    public static function encode(
+        mixed  $lwtTokenData,
+        string $ecdsaPrivateKey = null,
+        string $tokenEncryption = null,
+    ): string
+    {
+        self::$ALGORITHM = $tokenEncryption;
+        self::$PRIVATE_KEY = $ecdsaPrivateKey;
+
+        if (!self::$ALGORITHM || !self::$PRIVATE_KEY) {
+            throw new UnexpectedValueException("Алгоритм и ключ шифрования не могут быть пустыми");
+        }
+
+        if (!in_array(self::$ALGORITHM, self::ALLOWED_JWA)) {
+            throw new UnexpectedValueException("Недопустимый алгоритм шифрования");
+        }
+
+        // Генерируем сегмент заголовка токена
+        $headerSegment = self::generateHeaderSegment();
+        // Генерируем сегмент полезной нагрузки токена
+        $payloadSegment = self::generatePayloadSegment($lwtTokenData);
+        // Генерируем сигнатуру токена
+        $signatureSegment = self::generateSignature($headerSegment, $payloadSegment);
+
+        // Возвращаем закодированный токен
+        return "$headerSegment.$payloadSegment.$signatureSegment";
+    }
+
+    /**
+     * Декодирует JWT-токен.
+     *
+     * Эта функция декодирует токен и возвращает расшифрованные данные. Она принимает
+     * закодированный токен, публичный ключ, закрытый ключ и алгоритм шифрования в качестве аргументов.
+     * Если эти аргументы не указаны, используются значения по умолчанию, определенные в классе.
+     *
+     * @param string $encodedToken Закодированный токен.
+     * @param string|null $ecdsaPublicKey Публичный ключ в формате PEM (ECDSA).
+     * @param string|null $tokenEncryption Алгоритм шифрования (например, 'HS256', 'RS256').
+     *
+     * @return mixed Возвращает расшифрованные данные из токена.
+     *
+     * @throws UnexpectedValueException Алгоритм и ключ шифрования не могут быть пустыми
+     * @throws UnexpectedValueException Недопустимый алгоритм шифрования
+     * @throws UnexpectedValueException Неверное кол-во сегментов
+     * @throws Exception
+     */
+    public static function decode(
+        string $encodedToken,
+        string $ecdsaPublicKey = null,
+        string $tokenEncryption = null,
+    ): mixed
+    {
+        self::$ALGORITHM = $tokenEncryption;
+        self::$PUBLIC_KEY = $ecdsaPublicKey;
+
+        if (!self::$ALGORITHM || !self::$PUBLIC_KEY) {
+            throw new UnexpectedValueException("Алгоритм и ключ шифрования не могут быть пустыми");
+        }
+
+        if (!in_array(self::$ALGORITHM, self::ALLOWED_JWA)) {
+            throw new UnexpectedValueException("Недопустимый алгоритм шифрования");
+        }
+
+        // Разбиваем токен на сегменты
+        $segments = explode('.', $encodedToken);
+        if (count($segments) !== self::TOKEN_SEGMENTS_COUNT) {
+            // Если токен имеет неверное количество сегментов, выбрасываем исключение
+            throw new UnexpectedValueException('Неверное кол-во сегментов');
+        }
+
+        // Извлекаем сегменты заголовка, тела и криптографической подписи
+        list($headerSegment, $payloadSegment, $signatureSegment) = $segments;
+
+        // Проверяем сегмент заголовка
+        self::verifyHeaderSegment($headerSegment);
+        // Проверяем сегмент полезной нагрузки и извлекаем расшифрованные данные
+        $payload = self::verifyPayloadSegment($payloadSegment);
+        // Проверяем сигнатуру токена
+        self::verifySignature($headerSegment, $payloadSegment, $signatureSegment);
+
+        // Возвращаем расшифрованные данные
+        return $payload;
+    }
+
+    /**
+     * Генерирует сегмент заголовка токена.
+     *
+     * Эта функция генерирует сегмент заголовка токена, используя значения по умолчанию
+     * для типа токена и алгоритма шифрования, которые определены в классе.
+     *
+     * @return string Возвращает сегмент заголовка токена в формате base64url.
+     */
+    protected static function generateHeaderSegment(): string
+    {
+        // Генерируем заголовок токена
+        $header = array_filter(
+            [
+                'typ' => self::getClaim('typ'),
+                'alg' => self::getClaim('alg'),
+                'kid' => self::getClaim('kid'),
+            ],
+            function ($value) {
+                return $value && $value != null;
+            }
+        );
+
+        // Кодируем заголовок в формате JSON
+        $headerJson = self::jsonEncode($header);
+
+        // Кодируем заголовок в формате base64url и возвращаем сгенерированный сегмент токена
+        return self::base64UrlEncode($headerJson);
+    }
+
+    /**
+     * Проверяет сегмент заголовка токена.
+     *
+     * Эта функция проверяет сегмент заголовка токена. Она проверяет, что тип токена и алгоритм
+     * шифрования соответствуют значениям по умолчанию, определенным в классе. Если проверка не пройдена,
+     * функция выбрасывает исключение UnexpectedValueException.
+     *
+     * @param string $lwtTokenHeaderSegment Сегмент заголовка токена.
+     *
+     * @throws UnexpectedValueException Если тип токена или алгоритм шифрования не соответствуют значениям по умолчанию.
+     */
+    protected static function verifyHeaderSegment(string $lwtTokenHeaderSegment): void
+    {
+        // Декодируем сегмент заголовка из формата base64url
+        $headerJson = self::base64UrlDecode($lwtTokenHeaderSegment);
+
+        // Декодируем заголовок из формата JSON
+        $header = self::jsonDecode($headerJson);
+
+        // Проверяем, что тип токена и алгоритм шифрования соответствуют значениям по умолчанию
+        if (
+            !isset($header['typ']) ||
+            !isset($header['alg']) ||
+            $header['typ'] !== self::getClaim('typ') ||
+            $header['alg'] !== self::getClaim('alg')
+        ) {
+            // Если проверка не пройдена, выбрасываем исключение
+            throw new UnexpectedValueException('Ошибка шифрования заголовка');
+        }
+    }
+
+
+    /**
+     * Генерирует сегмент полезной нагрузки токена.
+     *
+     * Эта функция генерирует сегмент полезной нагрузки токена, используя данные и публичный ключ.
+     * Она кодирует данные в формате JSON, шифрует их с помощью алгоритмов AES и RSA, и возвращает
+     * полученную строку в формате base64url.
+     *
+     * @param mixed $lwtTokenData Данные для кодирования в токен.
+     *
+     * @return string Возвращает сегмент полезной нагрузки токена в формате base64url.
+     *
+     * @see https://tools.ietf.org/html/rfc7519
+     * @see https://www.php.net/manual/en/function.openssl-random-pseudo-bytes.php
+     * @see https://www.php.net/manual/en/function.openssl-public-encrypt.php
+     * @see https://www.php.net/manual/en/function.openssl-cipher-iv-length.php
+     * @see https://www.php.net/manual/en/function.openssl-encrypt.php
+     */
+    protected static function generatePayloadSegment(mixed $lwtTokenData): string
+    {
+        // Кодируем данные в формате JSON
+        $payloadData = self::jsonEncode($lwtTokenData);
+
+        // Кодируем полезную нагрузку токена в формате base64url и возвращаем сгенерированный сегмент токена
+        return self::base64UrlEncode($payloadData);
+    }
+
+    /**
+     * Проверяет сегмент полезной нагрузки токена.
+     *
+     * Эта функция проверяет сегмент полезной нагрузки токена. Она расшифровывает данные,
+     * используя закрытый ключ и алгоритмы AES и RSA, и возвращает расшифрованные данные. Если при
+     * расшифровке произошла ошибка, функция выбрасывает исключение RuntimeException.
+     *
+     * @param string $lwtTokenPayloadSegment Сегмент полезной нагрузки токена.
+     *
+     * @return mixed Возвращает расшифрованные данные из токена.
+     *
+     * @throws RuntimeException Неверная длина ключа AES.
+     * @throws RuntimeException Ошибка расшифровки ключа AES.
+     * @throws RuntimeException Ошибка расшифровки данных.
+     *
+     * @see https://www.php.net/manual/en/function.unpack.php
+     * @see https://www.php.net/manual/en/function.substr.php
+     * @see https://www.php.net/manual/en/function.openssl-private-decrypt.php
+     * @see https://www.php.net/manual/en/function.openssl-cipher-iv-length.php
+     * @see https://www.php.net/manual/en/function.openssl-decrypt.php
+     */
+    protected static function verifyPayloadSegment(string $lwtTokenPayloadSegment): mixed
+    {
+        // Декодируем тело из base64url
+        $payloadData = self::base64UrlDecode($lwtTokenPayloadSegment);
+
+        // Декодируем JSON-представление данных
+        return self::jsonDecode($payloadData);
+    }
+
+    /**
+     * Генерирует сигнатуру для токена.
+     *
+     * Эта функция генерирует сигнатуру для токена.
+     *
+     * @param string $headerSegment Сегмент заголовка токена.
+     * @param string $payloadSegment Сегмент полезной нагрузки токена.
+     *
+     * @return string Возвращает сигнатуру в формате base64url.
+     *
+     * @throws SodiumException Ошибка создания подписи.
+     * @throws RuntimeException Ошибка создания подписи.
+     * @throws UnexpectedValueException Недопустимый алгоритм шифрования.
+     * @throws Exception Требуется php-sodium.
+     *
+     * @see https://www.php.net/manual/en/function.hash-hmac.php
+     * @see https://www.php.net/manual/en/function.openssl-sign.php
+     */
+    protected static function generateSignature(string $headerSegment, string $payloadSegment): string
+    {
+        $data = "$headerSegment.$payloadSegment";
+        $signature = '';
+
+        switch (self::getEncryption()) {
+            case 'HMAC':    // 'HS1', 'HS256', 'HS256/64', 'HS384', 'HS512'
+                $signature = hash_hmac(self::getHashAlgorithm(), $data, self::generateHmacKeyFromPrivateKey(), self::HASH_RAW_OUTPUT);
+                break;
+
+            case 'RSA-PKCS#1':  // 'RS1', 'RS256', 'RS384', 'RS512'
+            case 'ECDSA':   // 'ES256', 'ES256K', 'ES384', 'ES512'
+                $success = openssl_sign($data, $signature, self::$PRIVATE_KEY, self::getHashAlgorithm());
+                if (!$success) {
+                    throw new RuntimeException('Ошибка создания подписи');
+                }
+                break;
+
+            case 'EdDSA':  // EdDSA (Ed25519)
+                if (!extension_loaded('sodium')) {
+                    throw new Exception('Требуется php-sodium');
+                }
+
+                $signature = sodium_crypto_sign_detached($data, self::$PRIVATE_KEY);
+                break;
+
+            default:
+                throw new UnexpectedValueException('Недопустимый алгоритм шифрования');
+        }
+
+        if (self::getClaim('alg') == 'HS256/64') {
+            $signature = mb_substr($signature, 0, 8, '8bit');
+        }
+
+        // Кодируем подпись в формате base64url и возвращаем сгенерированный сегмент токена
+        return self::base64UrlEncode($signature);
+    }
+
+    /**
+     * Проверяет сигнатуру токена.
+     *
+     * Эта функция проверяет сигнатуру токена.
+     *
+     * @param string $headerSegment Сегмент заголовка токена.
+     * @param string $payloadSegment Сегмент полезной нагрузки токена.
+     * @param string $signatureSegment Сегмент сигнатуры токена.
+     *
+     * @throws SodiumException Ошибка верификации сигнатуры.
+     * @throws UnexpectedValueException Ошибка верификации сигнатуры.
+     * @throws UnexpectedValueException Недопустимый алгоритм шифрования.
+     * @throws Exception Требуется php-sodium.
+     *
+     * @see https://www.php.net/manual/en/function.openssl-verify.php
+     * @see https://www.php.net/manual/en/function.hash-hmac.php
+     */
+    protected static function verifySignature(string $headerSegment, string $payloadSegment, string $signatureSegment): void
+    {
+        // Проверяем сигнатуру
+        $signature = self::base64UrlDecode($signatureSegment);
+
+        $data = "$headerSegment.$payloadSegment";
+
+        switch (self::getEncryption()) {
+            case 'HMAC':    // 'HS1', 'HS256', 'HS256/64', 'HS384', 'HS512'
+                $hash = hash_hmac(self::getHashAlgorithm(), $data, self::generateHmacKeyFromPublicKey(), self::HASH_RAW_OUTPUT);
+                if (!self::hashEquals($hash, $signature)) {
+                    throw new UnexpectedValueException('Ошибка верификации сигнатуры');
+                }
+                break;
+
+            case 'RSA-PKCS#1':  // 'RS1', 'RS256', 'RS384', 'RS512'
+            case 'ECDSA':   // 'ES256', 'ES256K', 'ES384', 'ES512'
+                $verify = openssl_verify($data, $signature, self::$PUBLIC_KEY, self::getHashAlgorithm());
+                if ($verify !== self::OPENSSL_VERIFY_SUCCESS) {
+                    throw new UnexpectedValueException('Ошибка верификации сигнатуры');
+                }
+                break;
+
+            case 'EdDSA':  // EdDSA (Ed25519)
+                if (!extension_loaded('sodium')) {
+                    throw new Exception('Требуется php-sodium');
+                }
+
+                $verify = sodium_crypto_sign_verify_detached($signature, $data, self::$PRIVATE_KEY);
+                if (!$verify) {
+                    throw new UnexpectedValueException('Ошибка верификации сигнатуры');
+                }
+                break;
+
+            default:
+                throw new UnexpectedValueException('Недопустимый алгоритм шифрования');
+        }
+    }
+
+    /**
+     * Генерирует HMAC-ключ из закрытого ключа.
+     *
+     * Эта функция использует закрытый ключ для генерации HMAC-ключа. Она также использует
+     * значения по умолчанию для типа токена, алгоритма шифрования, симметричного и асимметричного
+     * методов шифрования, которые определены в классе.
+     *
+     * @return string Возвращает HMAC-ключ.
+     *
+     * @throws RuntimeException Ошибка получения закрытого ключа.
+     * @throws RuntimeException Ошибка создания подписи.
+     *
+     * @see https://www.php.net/manual/en/function.openssl-pkey-get-private.php
+     * @see https://www.php.net/manual/en/function.openssl-pkey-get-details.php
+     * @see https://www.php.net/manual/en/function.openssl-sign.php
+     */
+    protected static function generateHmacKeyFromPrivateKey(): string
+    {
+        // Генерируем предварительный ключ
+        $data = self::getClaim('typ') .
+            '*' . self::getClaim('alg');
+
+        $key = openssl_pkey_get_private(self::$PRIVATE_KEY);
+
+        if (!$key) {
+            return self::$PRIVATE_KEY;
+            // throw new RuntimeException('Ошибка получения закрытого ключа');
+        }
+
+        // Получаем информацию о закрытом ключе
+        $keyDetails = openssl_pkey_get_details($key);
+        // Извлекаем публичный ключ из информации о закрытом ключе
+        $ecdsaPublicKey = $keyDetails['key'];
+
+        try {
+            // Генерируем криптографическую подпись с использованием публичного ключа и алгоритма SHA-512
+            $result = openssl_sign($data, $signature, $ecdsaPublicKey, OPENSSL_ALGO_SHA512);
+        } catch (Throwable $e) {
+            throw new RuntimeException('Ошибка создания подписи: ' . $e->getMessage());
+        }
+
+        if (!$result) {
+            throw new RuntimeException('Ошибка создания подписи');
+        }
+
+        return $signature;
+    }
+
+    /**
+     * Генерирует HMAC-ключ из публичного ключа.
+     *
+     * Эта функция использует публичный ключ для генерации HMAC-ключа. Она также использует
+     * значения по умолчанию для типа токена, алгоритма шифрования, симметричного и асимметричного
+     * методов шифрования, которые определены в классе.
+     *
+     * @return string Возвращает HMAC-ключ.
+     *
+     * @throws RuntimeException Ошибка создания подписи.
+     *
+     * @see https://www.php.net/manual/en/function.openssl-sign.php
+     */
+    protected static function generateHmacKeyFromPublicKey(): string
+    {
+        // Генерируем предварительный ключ
+        $data = self::getClaim('typ') .
+            '*' . self::getClaim('alg');
+
+        if (!openssl_pkey_get_public(self::$PUBLIC_KEY)) {
+            return self::$PUBLIC_KEY;
+        }
+
+        try {
+            // Генерируем криптографическую подпись с использованием публичного ключа и алгоритма SHA-512
+            $result = openssl_sign($data, $signature, self::$PUBLIC_KEY, OPENSSL_ALGO_SHA512);
+        } catch (Throwable $e) {
+            throw new RuntimeException('Ошибка создания подписи: ' . $e->getMessage());
+        }
+
+        if (!$result) {
+            throw new RuntimeException('Ошибка создания подписи');
+        }
+
+        return $signature;
+    }
+
+    /**
+     * Кодирует данные в формате base64url.
+     *
+     * Эта функция кодирует данные в формате base64url, который является URL-безопасной версией
+     * кодировки base64. Она заменяет символы '+', '/' и '=' на '-', '_' и '' соответственно.
+     *
+     * @param mixed $inputData Данные для кодирования в формате base64url.
+     *
+     * @return string Возвращает строку в формате base64url, представляющую закодированные данные.
+     *
+     *
+     * @throws RuntimeException Ошибка кодирования base64
+     *
+     * @see https://www.php.net/manual/en/function.base64-encode.php
+     */
+    public static function base64UrlEncode(mixed $inputData): string
+    {
+        // Кодируем данные в формате base64
+        $base64EncodedData = base64_encode($inputData);
+
+        if (!$base64EncodedData) {
+            throw new RuntimeException('Ошибка кодирования base64');
+        }
+
+        // Заменяем символы '+', '/' и '=' на '-', '_' и '' соответственно
+        $base64UrlEncodedData = str_replace(['+', '/', '='], ['-', '_', ''], $base64EncodedData);
+
+        if (!$base64UrlEncodedData) {
+            throw new RuntimeException('Ошибка кодирования base64Url');
+        }
+
+        return $base64UrlEncodedData;
+    }
+
+    /**
+     * Декодирует данные из формата base64url.
+     *
+     * Эта функция декодирует данные из формата base64url, который является URL-безопасной версией
+     * кодировки base64. Она заменяет символы '-', '_' и '' на '+', '/' и '=' соответственно.
+     *
+     * @param string $inputData Строка в формате base64url для декодирования.
+     *
+     * @return false|string Возвращает декодированные данные или false, если произошла ошибка.
+     *
+     * @throws RuntimeException Ошибка декодирования base64
+     *
+     * @see https://www.php.net/manual/en/function.base64-decode.php
+     */
+    public static function base64UrlDecode(string $inputData): false|string
+    {
+        // Вычисляем остаток от деления длины строки на 4
+        $remainder = strlen($inputData) % self::BASE64_GROUP_SIZE;
+        if ($remainder) {
+            // Если остаток не равен нулю, добавляем символы '=' в конец строки
+            $padlen = self::BASE64_GROUP_SIZE - $remainder;
+            $inputData .= str_repeat('=', $padlen);
+        }
+        // Заменяем символы '-', '_' и '' на '+', '/' и '=' соответственно
+        $base64EncodedData = str_replace(['-', '_'], ['+', '/'], $inputData);
+        // Декодируем данные из формата base64
+        $decodedData = base64_decode($base64EncodedData);
+
+        if (!$decodedData) {
+            throw new RuntimeException('Ошибка декодирования base64');
+        }
+
+        return $decodedData;
+    }
+
+    /**
+     * Декодирует JSON-строку.
+     *
+     * Эта функция декодирует JSON-строку и возвращает ассоциативный массив. Она также принимает
+     * дополнительные флаги для управления поведением декодирования. Если при декодировании
+     * произошла ошибка, функция выбрасывает исключение DomainException с сообщением об ошибке.
+     *
+     * @param string $jsonString JSON-строка для декодирования.
+     *
+     * @return mixed Возвращает ассоциативный массив, представляющий декодированные данные.
+     *
+     * @throws DomainException Ошибка JSON
+     * @throws DomainException Попытка интерпретировать не-JSON
+     * @throws RuntimeException Ошибка декодирования JSON
+     *
+     * @see https://www.php.net/manual/en/function.json-decode.php
+     * @see https://www.php.net/manual/en/function.json-last-error.php
+     */
+    protected static function jsonDecode(string $jsonString): mixed
+    {
+        // Декодируем JSON-строку с использованием указанных флагов
+        $decodedData = json_decode($jsonString, true, self::JSON_MAX_DEPTH, JSON_BIGINT_AS_STRING);
+
+        // Проверяем наличие ошибок при декодировании JSON
+        if ($errno = json_last_error()) {
+            // Определяем сообщения об ошибках для разных типов ошибок
+            $messages = [
+                JSON_ERROR_DEPTH => 'Превышена максимальный объём стека',
+                JSON_ERROR_STATE_MISMATCH => 'Некорректный JSON',
+                JSON_ERROR_CTRL_CHAR => 'Unexpected control character found',
+                JSON_ERROR_SYNTAX => 'Ошибка синтаксиса, некорректный JSON',
+                JSON_ERROR_UTF8 => 'Некорректный UTF-8' //PHP >= 5.3.3
+            ];
+            // Выбрасываем исключение с соответствующим сообщением об ошибке
+            throw new DomainException(
+                $messages[$errno] ?? 'Ошибка JSON: ' . $errno
+            );
+        } elseif ($decodedData === null && $jsonString !== 'null') {
+            // Если данные равны null, но строка не равна 'null', выбрасываем исключение
+            throw new DomainException('Попытка интерпретировать не-JSON');
+        }
+
+        if (!$decodedData) {
+            // Если при расшифровке произошла другая ошибка
+            throw new RuntimeException('Ошибка декодирования JSON');
+        }
+
+        // Возвращаем декодированные данные
+        return $decodedData;
+    }
+
+    /**
+     * Кодирует данные в формате JSON.
+     *
+     * Эта функция кодирует данные в формате JSON и возвращает полученную строку. Она также принимает
+     * дополнительные флаги для управления поведением кодирования. Если при кодировании произошла ошибка,
+     * функция выбрасывает исключение DomainException с сообщением об ошибке.
+     *
+     * @param mixed $inputData Данные для кодирования в формате JSON.
+     *
+     * @return string Возвращает строку в формате JSON, представляющую закодированные данные.
+     *
+     * @throws RuntimeException Ошибка кодирования JSON.
+     * @throws DomainException Ошибка JSON.
+     *
+     * @see https://www.php.net/manual/en/function.json-encode.php
+     * @see https://www.php.net/manual/en/function.json-last-error.php
+     */
+    protected static function jsonEncode(mixed $inputData): string
+    {
+        // Кодируем данные в формате JSON с использованием указанных флагов
+        $encodedData = json_encode($inputData, JSON_UNESCAPED_SLASHES);
+
+        if (!$encodedData) {
+            throw new RuntimeException('Ошибка кодирования JSON');
+        }
+
+        // Проверяем наличие ошибок при кодировании JSON
+        if ($errno = json_last_error()) {
+            // Определяем сообщения об ошибках для разных типов ошибок
+            $messages = [
+                JSON_ERROR_DEPTH => 'Превышена максимальный объём стека',
+                JSON_ERROR_STATE_MISMATCH => 'Некорректный JSON',
+                JSON_ERROR_CTRL_CHAR => 'Unexpected control character found',
+                JSON_ERROR_SYNTAX => 'Ошибка синтаксиса, некорректный JSON',
+                JSON_ERROR_UTF8 => 'Некорректный UTF-8',
+            ];
+            // Выбрасываем исключение с соответствующим сообщением об ошибке
+            throw new DomainException($messages[$errno] ?? 'Ошибка JSON: ' . $errno);
+        }
+
+        // Возвращаем закодированную строку
+        return $encodedData;
+    }
+
+    /**
+     * Сравнивает две строки с использованием константного времени.
+     *
+     * Эта функция сравнивает две строки с использованием константного времени, чтобы предотвратить
+     * атаки по времени. Она использует встроенную функцию hash_equals, если она доступна,
+     * и реализует свой алгоритм сравнения в противном случае.
+     *
+     * @param string $firstString Первая строка для сравнения.
+     * @param string $secondString Вторая строка для сравнения.
+     *
+     * @return bool Возвращает true, если строки равны, и false в противном случае.
+     *
+     * @see https://www.php.net/manual/en/function.hash-equals.php
+     */
+    protected static function hashEquals(string $firstString, string $secondString): bool
+    {
+        static $native = null;
+        if ($native === null) {
+            $native = function_exists('hash_equals');
+        }
+        if ($native) {
+            // Используем встроенную функцию hash_equals для сравнения строк
+            return hash_equals($firstString, $secondString);
+        }
+
+        // Определяем минимальную длину строк
+        $len = min(self::safeStrlen($firstString), self::safeStrlen($secondString));
+
+        // Сравниваем строки побайтово
+        $status = 0;
+        for ($i = 0; $i < $len; $i++) {
+            // Используем побитовое XOR для сравнения байтов
+            $status |= (ord($firstString[$i]) ^ ord($secondString[$i]));
+        }
+        // Сравниваем длины строк
+        $status |= (self::safeStrlen($firstString) ^ self::safeStrlen($secondString));
+
+        // Возвращаем результат сравнения
+        return ($status === self::STRINGS_MATCH);
+    }
+
+    /**
+     * Возвращает длину строки в безопасном режиме.
+     *
+     * Эта функция возвращает длину строки, используя функцию mb_strlen, если она доступна,
+     * и функцию strlen в противном случае. Она предназначена для использования в ситуациях,
+     * когда необходимо получить длину строки в байтах, а не в символах.
+     *
+     * @param string $inputString Строка, длина которой нужно получить.
+     *
+     * @return int Возвращает длину строки в байтах.
+     *
+     * @throws RuntimeException Ошибка получения длины строки
+     *
+     * @see https://www.php.net/manual/en/function.mb-strlen.php
+     * @see https://www.php.net/manual/en/function.strlen.php
+     */
+    protected static function safeStrlen(string $inputString): int
+    {
+        static $exists = null;
+        if ($exists === null) {
+            $exists = extension_loaded('mbstring') && function_exists('mb_strlen');
+        }
+        if ($exists) {
+            // Используем функцию mb_strlen с кодировкой '8bit' для получения длины строки в байтах
+            $length = mb_strlen($inputString, self::MBSTRING_ENCODING);
+        } else {
+            // Используем функцию strlen для получения длины строки в байтах
+            $length = strlen($inputString);
+        }
+
+        if (!$length) {
+            throw new RuntimeException('Ошибка получения длины строки');
+        }
+
+        return $length;
+    }
+}
