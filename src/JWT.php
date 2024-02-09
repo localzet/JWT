@@ -1,6 +1,6 @@
 <?php
 /**
- * @package     JWT
+ * @package     JSON Web Token Generator
  * @link        https://github.com/localzet/JWT
  *
  * @author      Ivan Zorin <creator@localzet.com>
