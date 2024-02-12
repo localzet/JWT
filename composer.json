@@ -1,9 +1,16 @@
 {
   "name": "localzet/jwt",
-  "description": "JSON Web Tokens",
+  "description": "Localzet JWT is a library for working with JSON Web Tokens (JWT). Developed by Ivan Zorin, it uses modern technologies and standards for creating, verifying, and handling JWTs.",
   "type": "library",
   "keywords": [
-    "JWT"
+    "JSON Web Tokens",
+    "JWT",
+    "PHP",
+    "library",
+    "localzet",
+    "AGPL",
+    "openssl",
+    "mbstring"
   ],
   "license": "AGPL-3.0-or-later",
   "authors": [
