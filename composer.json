@@ -24,7 +24,7 @@
   "support": {
     "email": "support@localzet.com",
     "issues": "https://github.com/localzet/JWT/issues",
-    "source": "https://github.com/localzet/JWT",
+    "source": "https://github.com/localzet/JWT"
   },
   "require": {
     "php": "^8.0 | ^8.1 | ^8.2",
