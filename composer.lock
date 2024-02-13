@@ -1,22 +1,22 @@
 {
-  "_readme": [
-    "This file locks the dependencies of your project to a known state",
-    "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
-    "This file is @generated automatically"
-  ],
-  "content-hash": "a77f6149b156f3b75623a6c9c2577527",
-  "packages": [],
-  "packages-dev": [],
-  "aliases": [],
-  "minimum-stability": "stable",
-  "stability-flags": [],
-  "prefer-stable": false,
-  "prefer-lowest": false,
-  "platform": {
-    "php": "^8.2",
-    "ext-openssl": "*",
-    "ext-mbstring": "*"
-  },
-  "platform-dev": [],
-  "plugin-api-version": "2.2.0"
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "d8a48309c382f00f5ffbd1e5715e8a6c",
+    "packages": [],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": [],
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {
+        "php": "^8.0 | ^8.1 | ^8.2",
+        "ext-openssl": "*",
+        "ext-mbstring": "*"
+    },
+    "platform-dev": [],
+    "plugin-api-version": "2.2.0"
 }
