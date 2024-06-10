@@ -27,9 +27,10 @@
     "source": "https://github.com/localzet/JWT"
   },
   "require": {
-    "php": "^8.0 | ^8.1 | ^8.2",
+    "php": ">=7.4",
     "ext-openssl": "*",
-    "ext-mbstring": "*"
+    "ext-mbstring": "*",
+    "ext-json": "*"
   },
   "suggest": {
     "ext-sodium": "For EdDSA"

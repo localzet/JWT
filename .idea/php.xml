@@ -17,7 +17,7 @@
   </component>
   <component name="PhpInterpreters">
     <interpreters>
-      <interpreter id="82f90f34-cc4b-4ae3-b5c2-519bf3618255" name="Ubuntu" home="\\wsl$\Ubuntu/usr/bin/php" false="false" debugger_id="php.debugger.XDebug">
+      <interpreter id="82f90f34-cc4b-4ae3-b5c2-519bf3618255" name="Ubuntu" home="\\wsl$\Ubuntu/usr/bin/php" auto="false" debugger_id="php.debugger.XDebug">
         <remote_data INTERPRETER_PATH="/usr/bin/php" HELPERS_PATH="" VALID="true" RUN_AS_ROOT_VIA_SUDO="false" DISTRIBUTION_ID="Ubuntu" />
       </interpreter>
     </interpreters>
@@ -86,7 +86,7 @@
       </interpreter>
     </phpInfoCache>
   </component>
-  <component name="PhpProjectSharedConfiguration" php_language_level="8.0" />
+  <component name="PhpProjectSharedConfiguration" php_language_level="7.4" />
   <component name="PhpStanOptionsConfiguration">
     <option name="transferred" value="true" />
   </component>
