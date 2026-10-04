@@ -27,7 +27,6 @@ declare(strict_types=1);
 
 namespace localzet;
 
-use DomainException;
 use Exception;
 use RuntimeException;
 use SodiumException;
@@ -45,6 +44,8 @@ use function strlen;
  */
 final class JWT
 {
+    use Base64UrlTrait, JsonTrait;
+
     /**
      * Тип токена
      *
@@ -58,16 +59,10 @@ final class JWT
      * @var array ALLOWED_JWA
      */
     private const ALLOWED_JWA = [
-        'HS256', 'HS384', 'HS512',          // Симметричные алгоритмы
-        'RS256', 'RS384', 'RS512',          // Асимметричные алгоритмы (RSA-PKCS#1) 
-        'ES256', 'ES384', 'ES512',          // Асимметричные алгоритмы, основанные на эллиптической кривой
-        'EdDSA',                            // Асимметричный алгоритм, основанный на кривой Эдвардса (Ed25519 или Ed448)
-        'RS1', 'HS1', 'HS256/64', 'ES256K', // Экспериментальные алгоритмы
-        /*
-            RS1 и HS1 используют алгоритм хэширования SHA-1
-            HS256/64 после генерации сигнатуры оставляет только первые 8 символов
-            ES256K выделен для ECDSA на кривой secp256k1 
-        */
+        'HS256', 'HS384', 'HS512',
+        'RS256', 'RS384', 'RS512',
+        'ES256', 'ES384', 'ES512',
+        'EdDSA',
     ];
 
     /**
@@ -80,7 +75,7 @@ final class JWT
     protected static string $ALGORITHM = 'ES512';
 
     /**
-     * Ключ подписи в формате PEM 
+     * Ключ подписи в формате PEM
      *
      * Используется для создания/проверки цифровой подписи токена.
      *
@@ -93,8 +88,6 @@ final class JWT
     private const TOKEN_SEGMENTS_COUNT = 3;
     private const HASH_RAW_OUTPUT = true;
     private const OPENSSL_VERIFY_SUCCESS = 1;
-    private const BASE64_GROUP_SIZE = 4;
-    private const JSON_MAX_DEPTH = 512;
     private const STRINGS_MATCH = 0;
     private const MBSTRING_ENCODING = '8bit';
 
@@ -130,6 +123,11 @@ final class JWT
             case 'ES512':
                 $encryption = 'ECDSA';
                 break;
+            case 'PS256':
+            case 'PS384':
+            case 'PS512':
+                $encryption = 'RSA-PSS';
+                break;
             case 'EdDSA':
                 $encryption = 'EdDSA';
                 break;
@@ -156,6 +154,7 @@ final class JWT
             case 'HS256':
             case 'RS256':
             case 'ES256':
+            case 'PS256':
             case 'ES256K':
             case 'HS256/64':
             case 'EdDSA':
@@ -164,11 +163,13 @@ final class JWT
             case 'HS384':
             case 'RS384':
             case 'ES384':
+            case 'PS384':
                 $hashAlgorithm = 'SHA384';
                 break;
             case 'HS512':
             case 'RS512':
             case 'ES512':
+            case 'PS512':
                 $hashAlgorithm = 'SHA512';
                 break;
             default:
@@ -212,11 +213,11 @@ final class JWT
      */
     public static function encode(
         $lwtTokenData,
-        string $signatureKey = null,
-        string $tokenEncryption = null
+        ?string $signatureKey = null,
+        ?string $tokenEncryption = null
     ): string
     {
-        self::$ALGORITHM = $tokenEncryption;
+        self::$ALGORITHM = $tokenEncryption ?? '';
         self::$SIGN_KEY = $signatureKey;
 
         if (!self::$ALGORITHM || !self::$SIGN_KEY) {
@@ -258,11 +259,11 @@ final class JWT
      */
     public static function decode(
         string $encodedToken,
-        string $signatureKey = null,
-        string $tokenEncryption = null
+        ?string $signatureKey = null,
+        ?string $tokenEncryption = null
     )
     {
-        self::$ALGORITHM = $tokenEncryption;
+        self::$ALGORITHM = $tokenEncryption ?? '';
         self::$SIGN_KEY = $signatureKey;
 
         if (!self::$ALGORITHM || !self::$SIGN_KEY) {
@@ -285,12 +286,24 @@ final class JWT
 
         // Проверяем сегмент заголовка
         self::verifyHeaderSegment($headerSegment);
-        // Проверяем сегмент полезной нагрузки и извлекаем расшифрованные данные
-        $payload = self::verifyPayloadSegment($payloadSegment);
-        // Проверяем сигнатуру токена
         self::verifySignature($headerSegment, $payloadSegment, $signatureSegment);
+        $payload = self::verifyPayloadSegment($payloadSegment);
 
         // Возвращаем расшифрованные данные
+        if (!is_array($payload)) {
+            throw new UnexpectedValueException('JWT claims must be an object');
+        }
+        foreach (['exp', 'nbf', 'iat'] as $claim) {
+            if (array_key_exists($claim, $payload) &&
+                ((!is_int($payload[$claim]) && !is_float($payload[$claim])) || !is_finite((float) $payload[$claim]))) {
+                throw new UnexpectedValueException('Invalid NumericDate claim');
+            }
+        }
+        $now = time();
+        if ((isset($payload['exp']) && $now >= $payload['exp']) ||
+            (isset($payload['nbf']) && $now < $payload['nbf'])) {
+            throw new UnexpectedValueException('JWT is outside its validity period');
+        }
         return $payload;
     }
 
@@ -343,6 +356,9 @@ final class JWT
 
         // Декодируем заголовок из формата JSON
         $header = self::jsonDecode($headerJson);
+        if (!is_array($header) || isset($header['crit']) || isset($header['b64'])) {
+            throw new UnexpectedValueException('Unsupported JWT header');
+        }
 
         // Проверяем, что тип токена и алгоритм шифрования соответствуют значениям по умолчанию
         if (
@@ -378,6 +394,9 @@ final class JWT
     {
         // Кодируем данные в формате JSON
         $payloadData = self::jsonEncode($lwtTokenData);
+        if (!str_starts_with(ltrim($payloadData), '{')) {
+            throw new UnexpectedValueException('JWT claims must be a JSON object');
+        }
 
         // Кодируем полезную нагрузку токена в формате base64url и возвращаем сгенерированный сегмент токена
         return self::base64UrlEncode($payloadData);
@@ -408,6 +427,9 @@ final class JWT
     {
         // Декодируем тело из base64url
         $payloadData = self::base64UrlDecode($lwtTokenPayloadSegment);
+        if (!str_starts_with(ltrim($payloadData), '{')) {
+            throw new UnexpectedValueException('JWT claims must be a JSON object');
+        }
 
         // Декодируем JSON-представление данных
         return self::jsonDecode($payloadData);
@@ -438,16 +460,23 @@ final class JWT
 
         switch (self::getEncryption()) {
             case 'HMAC':    // 'HS1', 'HS256', 'HS256/64', 'HS384', 'HS512'
-                $signature = hash_hmac(self::getHashAlgorithm(), $data, self::generateHmacKeyFromSignKey(), self::HASH_RAW_OUTPUT);
+                $signature = hash_hmac(self::getHashAlgorithm(), $data, self::hmacKey(), self::HASH_RAW_OUTPUT);
                 break;
 
             case 'RSA-PKCS#1':  // 'RS1', 'RS256', 'RS384', 'RS512'
             case 'ECDSA':   // 'ES256', 'ES256K', 'ES384', 'ES512'
-                $success = openssl_sign($data, $signature, self::$SIGN_KEY, self::getHashAlgorithm());
+                $key = JwaSignature::validateKey(self::$SIGN_KEY, self::$ALGORITHM, true);
+                $success = openssl_sign($data, $signature, $key, self::getHashAlgorithm());
                 if (!$success) {
                     throw new RuntimeException('Ошибка создания подписи');
                 }
+                if (self::getEncryption() === 'ECDSA') {
+                    $signature = JwaSignature::fromDer($signature, self::$ALGORITHM);
+                }
                 break;
+
+            case 'RSA-PSS':
+                throw new UnexpectedValueException('RSA-PSS is not implemented');
 
             case 'EdDSA':  // EdDSA (Ed25519)
                 if (!extension_loaded('sodium')) {
@@ -495,7 +524,7 @@ final class JWT
 
         switch (self::getEncryption()) {
             case 'HMAC':    // 'HS1', 'HS256', 'HS256/64', 'HS384', 'HS512'
-                $hash = hash_hmac(self::getHashAlgorithm(), $data, self::generateHmacKeyFromSignKey(), self::HASH_RAW_OUTPUT);
+                $hash = hash_hmac(self::getHashAlgorithm(), $data, self::hmacKey(), self::HASH_RAW_OUTPUT);
                 if (!self::hashEquals($hash, $signature)) {
                     throw new UnexpectedValueException('Ошибка верификации сигнатуры');
                 }
@@ -503,11 +532,18 @@ final class JWT
 
             case 'RSA-PKCS#1':  // 'RS1', 'RS256', 'RS384', 'RS512'
             case 'ECDSA':   // 'ES256', 'ES256K', 'ES384', 'ES512'
-                $verify = openssl_verify($data, $signature, self::$SIGN_KEY, self::getHashAlgorithm());
+                $key = JwaSignature::validateKey(self::$SIGN_KEY, self::$ALGORITHM, false);
+                if (self::getEncryption() === 'ECDSA') {
+                    $signature = JwaSignature::toDer($signature, self::$ALGORITHM);
+                }
+                $verify = openssl_verify($data, $signature, $key, self::getHashAlgorithm());
                 if ($verify !== self::OPENSSL_VERIFY_SUCCESS) {
                     throw new UnexpectedValueException('Ошибка верификации сигнатуры');
                 }
                 break;
+
+            case 'RSA-PSS':
+                throw new UnexpectedValueException('RSA-PSS is not implemented');
 
             case 'EdDSA':  // EdDSA (Ed25519)
                 if (!extension_loaded('sodium')) {
@@ -523,222 +559,6 @@ final class JWT
             default:
                 throw new UnexpectedValueException('Недопустимый алгоритм шифрования');
         }
-    }
-
-    /**
-     * Генерирует HMAC-ключ из ключа подписи.
-     *
-     * Эта функция использует ключ подписи для генерации HMAC-ключа. Она также использует
-     * значения по умолчанию для типа токена, алгоритма шифрования, симметричного и асимметричного
-     * методов шифрования, которые определены в классе.
-     *
-     * @return string Возвращает HMAC-ключ.
-     *
-     * @throws RuntimeException Ошибка получения закрытого ключа.
-     * @throws RuntimeException Ошибка создания подписи.
-     *
-     * @see https://www.php.net/manual/en/function.openssl-pkey-get-private.php
-     * @see https://www.php.net/manual/en/function.openssl-pkey-get-details.php
-     * @see https://www.php.net/manual/en/function.openssl-sign.php
-     */
-    protected static function generateHmacKeyFromSignKey(): string
-    {
-        // Генерируем предварительный ключ
-        $data = self::getClaim('typ') .
-            '*' . self::getClaim('alg');
-
-        $key = self::$SIGN_KEY;
-
-        $public = @openssl_pkey_get_public($key);
-        $private = @openssl_pkey_get_private($key);
-
-        if (!$public && !$private) {
-            return $key;
-        }
-
-        if ($private) {
-            // Получаем информацию о закрытом ключе
-            $keyDetails = openssl_pkey_get_details($private);
-            // Извлекаем публичный ключ из информации о закрытом ключе
-            $key = $keyDetails['key'];
-        }
-
-        try {
-            // Генерируем криптографическую подпись с использованием ключа и алгоритма SHA-512
-            $result = openssl_sign($data, $signature, $key, OPENSSL_ALGO_SHA512);
-        } catch (Throwable $e) {
-            throw new RuntimeException('Ошибка создания подписи: ' . $e->getMessage());
-        }
-
-        if (!$result) {
-            throw new RuntimeException('Ошибка создания подписи');
-        }
-
-        return $signature;
-    }
-
-    /**
-     * Кодирует данные в формате base64url.
-     *
-     * Эта функция кодирует данные в формате base64url, который является URL-безопасной версией
-     * кодировки base64. Она заменяет символы '+', '/' и '=' на '-', '_' и '' соответственно.
-     *
-     * @param mixed $inputData Данные для кодирования в формате base64url.
-     *
-     * @return string Возвращает строку в формате base64url, представляющую закодированные данные.
-     *
-     *
-     * @throws RuntimeException Ошибка кодирования base64
-     *
-     * @see https://www.php.net/manual/en/function.base64-encode.php
-     */
-    public static function base64UrlEncode($inputData): string
-    {
-        // Кодируем данные в формате base64
-        $base64EncodedData = base64_encode($inputData);
-
-        if (!$base64EncodedData) {
-            throw new RuntimeException('Ошибка кодирования base64');
-        }
-
-        // Заменяем символы '+', '/' и '=' на '-', '_' и '' соответственно
-        $base64UrlEncodedData = str_replace(['+', '/', '='], ['-', '_', ''], $base64EncodedData);
-
-        if (!$base64UrlEncodedData) {
-            throw new RuntimeException('Ошибка кодирования base64Url');
-        }
-
-        return $base64UrlEncodedData;
-    }
-
-    /**
-     * Декодирует данные из формата base64url.
-     *
-     * Эта функция декодирует данные из формата base64url, который является URL-безопасной версией
-     * кодировки base64. Она заменяет символы '-', '_' и '' на '+', '/' и '=' соответственно.
-     *
-     * @param string $inputData Строка в формате base64url для декодирования.
-     *
-     * @return string Возвращает декодированные данные или false, если произошла ошибка.
-     *
-     * @throws RuntimeException Ошибка декодирования base64
-     *
-     * @see https://www.php.net/manual/en/function.base64-decode.php
-     */
-    public static function base64UrlDecode(string $inputData): string
-    {
-        // Вычисляем остаток от деления длины строки на 4
-        $remainder = strlen($inputData) % self::BASE64_GROUP_SIZE;
-        if ($remainder) {
-            // Если остаток не равен нулю, добавляем символы '=' в конец строки
-            $padlen = self::BASE64_GROUP_SIZE - $remainder;
-            $inputData .= str_repeat('=', $padlen);
-        }
-        // Заменяем символы '-', '_' и '' на '+', '/' и '=' соответственно
-        $base64EncodedData = str_replace(['-', '_'], ['+', '/'], $inputData);
-        // Декодируем данные из формата base64
-        $decodedData = base64_decode($base64EncodedData);
-
-        if (!$decodedData) {
-            throw new RuntimeException('Ошибка декодирования base64');
-        }
-
-        return $decodedData;
-    }
-
-    /**
-     * Декодирует JSON-строку.
-     *
-     * Эта функция декодирует JSON-строку и возвращает ассоциативный массив. Она также принимает
-     * дополнительные флаги для управления поведением декодирования. Если при декодировании
-     * произошла ошибка, функция выбрасывает исключение DomainException с сообщением об ошибке.
-     *
-     * @param string $jsonString JSON-строка для декодирования.
-     *
-     * @return mixed Возвращает ассоциативный массив, представляющий декодированные данные.
-     *
-     * @throws DomainException Ошибка JSON
-     * @throws DomainException Попытка интерпретировать не-JSON
-     * @throws RuntimeException Ошибка декодирования JSON
-     *
-     * @see https://www.php.net/manual/en/function.json-decode.php
-     * @see https://www.php.net/manual/en/function.json-last-error.php
-     */
-    protected static function jsonDecode(string $jsonString)
-    {
-        // Декодируем JSON-строку с использованием указанных флагов
-        $decodedData = json_decode($jsonString, true, self::JSON_MAX_DEPTH, JSON_BIGINT_AS_STRING);
-
-        // Проверяем наличие ошибок при декодировании JSON
-        if ($errno = json_last_error()) {
-            // Определяем сообщения об ошибках для разных типов ошибок
-            $messages = [
-                JSON_ERROR_DEPTH => 'Превышена максимальный объём стека',
-                JSON_ERROR_STATE_MISMATCH => 'Некорректный JSON',
-                JSON_ERROR_CTRL_CHAR => 'Unexpected control character found',
-                JSON_ERROR_SYNTAX => 'Ошибка синтаксиса, некорректный JSON',
-                JSON_ERROR_UTF8 => 'Некорректный UTF-8' //PHP >= 5.3.3
-            ];
-            // Выбрасываем исключение с соответствующим сообщением об ошибке
-            throw new DomainException(
-                $messages[$errno] ?? 'Ошибка JSON: ' . $errno
-            );
-        } elseif ($decodedData === null && $jsonString !== 'null') {
-            // Если данные равны null, но строка не равна 'null', выбрасываем исключение
-            throw new DomainException('Попытка интерпретировать не-JSON');
-        }
-
-        if (!$decodedData) {
-            // Если при расшифровке произошла другая ошибка
-            throw new RuntimeException('Ошибка декодирования JSON');
-        }
-
-        // Возвращаем декодированные данные
-        return $decodedData;
-    }
-
-    /**
-     * Кодирует данные в формате JSON.
-     *
-     * Эта функция кодирует данные в формате JSON и возвращает полученную строку. Она также принимает
-     * дополнительные флаги для управления поведением кодирования. Если при кодировании произошла ошибка,
-     * функция выбрасывает исключение DomainException с сообщением об ошибке.
-     *
-     * @param mixed $inputData Данные для кодирования в формате JSON.
-     *
-     * @return string Возвращает строку в формате JSON, представляющую закодированные данные.
-     *
-     * @throws RuntimeException Ошибка кодирования JSON.
-     * @throws DomainException Ошибка JSON.
-     *
-     * @see https://www.php.net/manual/en/function.json-encode.php
-     * @see https://www.php.net/manual/en/function.json-last-error.php
-     */
-    protected static function jsonEncode($inputData): string
-    {
-        // Кодируем данные в формате JSON с использованием указанных флагов
-        $encodedData = json_encode($inputData, JSON_UNESCAPED_SLASHES);
-
-        if (!$encodedData) {
-            throw new RuntimeException('Ошибка кодирования JSON');
-        }
-
-        // Проверяем наличие ошибок при кодировании JSON
-        if ($errno = json_last_error()) {
-            // Определяем сообщения об ошибках для разных типов ошибок
-            $messages = [
-                JSON_ERROR_DEPTH => 'Превышена максимальный объём стека',
-                JSON_ERROR_STATE_MISMATCH => 'Некорректный JSON',
-                JSON_ERROR_CTRL_CHAR => 'Unexpected control character found',
-                JSON_ERROR_SYNTAX => 'Ошибка синтаксиса, некорректный JSON',
-                JSON_ERROR_UTF8 => 'Некорректный UTF-8',
-            ];
-            // Выбрасываем исключение с соответствующим сообщением об ошибке
-            throw new DomainException($messages[$errno] ?? 'Ошибка JSON: ' . $errno);
-        }
-
-        // Возвращаем закодированную строку
-        return $encodedData;
     }
 
     /**
@@ -818,4 +638,14 @@ final class JWT
 
         return $length;
     }
+    private static function hmacKey(): string
+    {
+        $key = self::$SIGN_KEY;
+        $minimum = (int) substr(self::$ALGORITHM, 2) / 8;
+        if ($key === null || strlen($key) < $minimum || str_contains($key, '-----BEGIN')) {
+            throw new UnexpectedValueException('HMAC requires a sufficiently long symmetric key');
+        }
+        return $key;
+    }
+
 }
