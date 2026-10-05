@@ -46,3 +46,7 @@ composer test
 Tests include the public RFC 7515 HMAC vector, HMAC/RSA/ECDSA/Ed25519 checks, OpenSSL cross-verification, algorithm/key mismatch, malformed encodings, claim validity and tampering. CI checks PHP 8.2–8.5. These checks are not an independent cryptographic audit. Publishing to Packagist is separate from this source update.
 
 Specification references: [RFC 7515](https://www.rfc-editor.org/rfc/rfc7515), [RFC 7518](https://www.rfc-editor.org/rfc/rfc7518), [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725). License: AGPL-3.0-or-later.
+
+## Attribution
+
+Maintainer of Localzet contributions: **Ivan Zorin (localzet)** — <creator@localzet.com> · https://www.localzet.com. Copyright © 2026 Localzet Group. Original authorship and third-party licenses remain applicable. See [AUTHORS](.github/AUTHORS.md).
